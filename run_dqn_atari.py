@@ -11,6 +11,7 @@ import dqn
 from dqn_utils import *
 from atari_wrappers import *
 
+import argparse
 
 def atari_model(img_in, num_actions, scope, reuse=False):
     # as described in https://storage.googleapis.com/deepmind-data/assets/papers/DeepMindNature14236Paper.pdf
@@ -30,7 +31,9 @@ def atari_model(img_in, num_actions, scope, reuse=False):
 
 def atari_learn(env,
                 session,
-                num_timesteps):
+                num_timesteps,
+                frame_history_len = 4,
+                log_file = './log/progress.pkl'):
     # This is just a rough estimate
     num_iterations = float(num_timesteps) / 4.0
 
@@ -72,9 +75,10 @@ def atari_learn(env,
         gamma=0.99,
         learning_starts=50000,
         learning_freq=4,
-        frame_history_len=4,
+        frame_history_len=frame_history_len,
         target_update_freq=10000,
-        grad_norm_clipping=10
+        grad_norm_clipping=10,
+        log_file = log_file
     )
     env.close()
 
@@ -95,9 +99,11 @@ def set_global_seeds(i):
 
 def get_session():
     tf.reset_default_graph()
+    gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.4)
     tf_config = tf.ConfigProto(
         inter_op_parallelism_threads=1,
-        intra_op_parallelism_threads=1)
+        intra_op_parallelism_threads=1,
+        gpu_options=gpu_options)
     session = tf.Session(config=tf_config)
     print("AVAILABLE GPUS: ", get_available_gpus())
     return session
@@ -117,6 +123,11 @@ def get_env(task, seed):
     return env
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--frame', type=int, default=4)
+    parser.add_argument('--log', type=str, default='progress.pkl')
+    args = parser.parse_args()
+    
     # Get Atari games.
     benchmark = gym.benchmark_spec('Atari40M')
 
@@ -127,7 +138,9 @@ def main():
     seed = 0 # Use a seed of zero (you may want to randomize the seed!)
     env = get_env(task, seed)
     session = get_session()
-    atari_learn(env, session, num_timesteps=task.max_timesteps)
+    atari_learn(env, session, num_timesteps=task.max_timesteps,
+                frame_history_len = args.frame,
+                log_file = args.log)
 
 if __name__ == "__main__":
     main()

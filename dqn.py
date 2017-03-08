@@ -7,6 +7,8 @@ import tensorflow                as tf
 import tensorflow.contrib.layers as layers
 from collections import namedtuple
 from dqn_utils import *
+import time
+import pickle
 
 OptimizerSpec = namedtuple("OptimizerSpec", ["constructor", "kwargs", "lr_schedule"])
 
@@ -23,7 +25,8 @@ def learn(env,
           learning_freq=4,
           frame_history_len=4,
           target_update_freq=10000,
-          grad_norm_clipping=10):
+          grad_norm_clipping=10,
+          log_file = './log/progress.pkl'):
     """Run Deep Q-learning algorithm.
 
     You can specify your own convnet using q_func.
@@ -128,7 +131,17 @@ def learn(env,
     ######
     
     # YOUR CODE HERE
+    # [batch, num_actions]
+    q_out = q_func(obs_t_float, num_actions, scope='q_func', reuse=False)
+    q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES,scope='q_func')
+    # [batch, num_actions]
+    target_q_out = q_func(obs_tp1_float, num_actions, scope='target_q_func', reuse=False)
+    target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES,scope='target_q_func')
 
+    q_val = tf.reduce_sum(q_out * tf.one_hot(act_t_ph, num_actions), axis = 1) #[batch]
+    target_q_val = tf.reduce_max(target_q_out, axis=1) * (1-done_mask_ph) * gamma + rew_t_ph #[batch]
+    total_error = tf.reduce_mean(tf.square(q_val - target_q_val))
+    
     ######
 
     # construct optimization op (with gradient clipping)
@@ -156,6 +169,9 @@ def learn(env,
     best_mean_episode_reward = -float('inf')
     last_obs = env.reset()
     LOG_EVERY_N_STEPS = 10000
+    
+    performance_logs = []
+    t_start = time.time()
 
     for t in itertools.count():
         ### 1. Check stopping criterion
@@ -195,7 +211,20 @@ def learn(env,
         #####
         
         # YOUR CODE HERE
-
+        idx = replay_buffer.store_frame(last_obs)
+        # random exploration
+        if not model_initialized or np.random.rand() <= exploration.value(t):
+            action = np.random.choice(num_actions) # random policy
+        else:
+            recent_obs = replay_buffer.encode_recent_observation()[np.newaxis, ...]
+            q_val = session.run(q_out, feed_dict={obs_t_ph: recent_obs})
+            action = np.argmax(np.squeeze(q_val)) # greedy
+        nxt_obs, reward, done, info = env.step(action)
+        replay_buffer.store_effect(idx, action, reward, done)
+        if done:
+            nxt_obs = env.reset()
+        last_obs = nxt_obs
+        
         #####
 
         # at this point, the environment should have been advanced one step (and
@@ -245,6 +274,29 @@ def learn(env,
             #####
             
             # YOUR CODE HERE
+            # sample data
+            obs_batch, act_batch, rew_batch, nxt_obs_batch, done_mask = replay_buffer.sample(batch_size)
+            # initialize
+            if not model_initialized:
+                model_initialized = True
+                initialize_interdependent_variables(session, tf.global_variables(), {
+                    obs_t_ph: obs_batch,
+                    obs_tp1_ph: nxt_obs_batch
+                })
+                session.run(update_target_fn) # update target net
+            # train network
+            session.run(train_fn, feed_dict={
+                obs_t_ph: obs_batch,
+                act_t_ph: act_batch,
+                rew_t_ph: rew_batch,
+                obs_tp1_ph: nxt_obs_batch,
+                done_mask_ph: done_mask,
+                learning_rate: optimizer_spec.lr_schedule.value(t)
+            })
+            num_param_updates += 1
+            # update target net
+            if num_param_updates % target_update_freq == 0:
+                session.run(update_target_fn)
 
             #####
 
@@ -261,4 +313,9 @@ def learn(env,
             print("episodes %d" % len(episode_rewards))
             print("exploration %f" % exploration.value(t))
             print("learning_rate %f" % optimizer_spec.lr_schedule.value(t))
+            print("> time elapsed = {}s".format(time.time()-t_start))
             sys.stdout.flush()
+            
+            performance_logs.append((t, mean_episode_reward, best_mean_episode_reward))
+            with open('./log/'+log_file,'wb') as f:
+                pickle.dump(performance_logs, f)
